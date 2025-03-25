@@ -2,189 +2,94 @@
 
 This repository contains code for fine-tuning Llama-3 using the [Unsloth](https://github.com/unslothai/unsloth) library. Unsloth makes fine-tuning LLMs like Llama-3 up to 2x faster while using 70% less memory.
 
-## Overview
+## Training
 
-This repository contains two main scripts:
+### Local Training
 
-1. `train_on_modal.py` - For running training in the cloud using Modal's GPU infrastructure
-2. `train_locally.py` - For running training on a local machine with a GPU
+To train the model locally:
 
-Both scripts implement the same training pipeline for fine-tuning Llama-3 on the Alpaca dataset, but they're configured for different environments.
-
-## Script 1: train_on_modal.py - Cloud Training
-
-The `train_on_modal.py` script is designed to leverage Modal's cloud infrastructure for training. It includes:
-
-- Setting up Modal volumes for caching models and storing results
-- Creating a container image with all dependencies
-- Loading and configuring the Llama-3 model
-- Preparing the Alpaca dataset
-- Training using LoRA (Low-Rank Adaptation)
-- Saving and testing the fine-tuned model
-
-### Running on Modal
-
-#### Prerequisites
-
-1. Install Modal CLI:
-   ```
-   pip install modal
-   ```
-
-2. Authenticate with Modal:
-   ```
-   modal token new
-   ```
-
-#### Deployment and Training
-
-1. Deploy the script to Modal:
-   ```
-   modal deploy Unsloth_train_test/train_on_modal.py
-   ```
-
-2. Run the training function:
-   ```
-   modal run Unsloth_train_test/train_on_modal.py::train
-   ```
-
-3. After training completes, check the trained model:
-   ```
-   modal run Unsloth_train_test/train_on_modal.py::check_model
-   ```
-
-### Key Components of train_on_modal.py
-
-- **Modal App Setup**: Creates a Modal app and volumes for caching and saving models
-- **Container Image**: Builds an image with CUDA 11.8, PyTorch, and ML libraries
-- **Training Function**: `@app.function` decorator runs the training on a T4 GPU
-- **Checkpoint Saving**: Saves checkpoints every 5 steps to handle potential preemption
-- **Model Testing**: Includes a separate function for testing the model after training
-
-## Script 2: train_locally.py - Local Training
-
-The `train_locally.py` script is essentially the same as `train_on_modal.py` but configured for local execution. It contains Modal-specific code but can be adapted to run on your local machine with a GPU.
-
-### Running Locally
-
-To run this fine-tuning process locally, you'll need a machine with a GPU that has at least 16GB VRAM.
-
-#### Prerequisites
-
-1. Install the required dependencies:
-
+1. Install dependencies:
 ```bash
-# Install PyTorch with CUDA support
-pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu118
-
-# Install ML dependencies
-pip install unsloth transformers>=4.34.0 trl>=0.7.4 datasets accelerate>=0.23.0 bitsandbytes>=0.41.2 sentencepiece einops
+pip install torch transformers trl datasets unsloth accelerate bitsandbytes sentencepiece einops
 ```
 
-2. Adapt the `train_locally.py` file to run locally by:
-   - Removing Modal-specific imports and decorators
-   - Setting up local paths for model and checkpoint storage
-   - Adjusting batch size based on your GPU memory
+2. Run the training script:
+```bash
+python Unsloth_train_test/train_locally.py
+```
 
-#### Creating a Pure Local Version
+The script will:
+- Create a timestamped output directory for model checkpoints
+- Monitor GPU memory usage
+- Save checkpoints every 10 steps
+- Save the final model and training configuration
 
-You can convert `train_locally.py` to a pure local script by:
+### Modal Training
 
-1. Removing all Modal-specific code:
-   - `import modal` and Modal app/volume/image definitions
-   - `@app.function` decorators
+To train using Modal:
 
-2. Replacing Modal paths with local paths:
-   - Change `/root/.cache/huggingface` to a local path
-   - Change `/outputs/unsloth-model` to a local directory
+1. Install Modal:
+```bash
+pip install modal
+```
 
-3. Directly calling the training function in the `__main__` block:
-   ```python
-   if __name__ == "__main__":
-       train()
-   ```
+2. Authenticate with Modal:
+```bash
+modal token new
+```
 
-### Training Parameters
+3. Deploy the training script:
+```bash
+modal deploy Unsloth_train_test/train_on_modal.py
+```
 
-Both scripts use the following key parameters:
+## Testing
 
-- **Model**: `unsloth/llama-3-8b-bnb-4bit` (8B parameter model in 4-bit quantization)
-- **Max sequence length**: 2048 tokens
-- **LoRA rank**: 16
-- **Batch size**: 4 per device
-- **Gradient accumulation steps**: 4
-- **Training steps**: 30
-- **Checkpointing**: Every 5 steps
+To test a trained model:
 
-## Exporting to Ollama
+```bash
+python Unsloth_train_test/test_model.py --model_path outputs/model_YYYYMMDD_HHMMSS/final_model/ --prompt "Your test prompt here"
+```
 
-After fine-tuning, you can export your model to [Ollama](https://ollama.ai/) to run it locally on your machine.
+Example:
+```bash
+python Unsloth_train_test/test_model.py --model_path outputs/model_20250325_174009/final_model/ --prompt "Continue the Fibonacci sequence: 1, 1, 2, 3, 5, 8," --max_tokens 1000
+```
 
-### Steps to Export to Ollama:
+### Common Warnings
 
-1. Install Ollama on your machine following [Ollama's installation guide](https://github.com/ollama/ollama#installation)
+When running the test script, you may see the following warnings:
 
-2. Export your fine-tuned model to GGUF format. You can use the following libraries:
-   - [llama.cpp](https://github.com/ggerganov/llama.cpp)
-   - Unsloth's export utilities
+1. **Multiple Adapter Configurations Warning**:
+```
+Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model.
+```
+This is normal and doesn't affect model performance. It occurs because we create a PEFT configuration before loading the trained weights.
 
-3. Create a Modelfile for Ollama with the following content:
-   ```
-   FROM ./path/to/your/exported/model.gguf
-   
-   TEMPLATE """Below are some instructions that describe some tasks. Write responses that appropriately complete each request.
+2. **Missing Adapter Keys Warning**:
+```
+Found missing adapter keys while loading the checkpoint: [...]
+```
+This warning indicates that the model is looking for LoRA adapter weights for all layers but can't find them. This is expected because:
+- The model checks for weights in all layers (0-31)
+- Training might have only updated a subset of layers
+- The saved weights might have a different structure than expected
 
-   ### Instruction:
-   {{.Input}}
+These warnings are informational and don't indicate problems with the model's functionality. The model will still generate responses using the available trained weights.
 
-   ### Response:
-   """
-   
-   PARAMETER temperature 0.2
-   PARAMETER top_p 0.95
-   ```
+### Generation Parameters
 
-4. Create the Ollama model:
-   ```
-   ollama create unsloth_model -f Modelfile
-   ```
+The test script supports the following parameters:
+- `--model_path`: Path to the trained model (required)
+- `--prompt`: The prompt to test with (required)
+- `--max_tokens`: Maximum number of tokens to generate (default: 200)
+- `--temperature`: Temperature for generation (default: 0.7)
 
-5. Run your model:
-   ```
-   ollama run unsloth_model
-   ```
+## Requirements
 
-For more detailed information about the fine-tuning process with Unsloth and exporting to Ollama, refer to the [Unsloth documentation](https://docs.unsloth.ai/basics/tutorial-how-to-finetune-llama-3-and-use-in-ollama#id-6.-alpaca-dataset).
-
-## Differences Between the Scripts
-
-While both scripts contain nearly identical code, they serve different purposes:
-
-1. **train_on_modal.py**: 
-   - Designed to run in Modal's cloud environment
-   - Uses Modal volumes for persistence
-   - Configured to leverage Modal's GPU resources
-   - Handles preemption through checkpointing
-
-2. **train_locally.py**:
-   - Can be modified to run on a local GPU
-   - Contains the same Modal code but needs adaptation for local use
-   - Serves as a template for local execution
-
-## Additional Resources
-
-- [Unsloth GitHub Repository](https://github.com/unslothai/unsloth)
-- [Unsloth Documentation](https://docs.unsloth.ai/)
-- [Modal Documentation](https://modal.com/docs/guide)
-- [Ollama GitHub Repository](https://github.com/ollama/ollama)
-
-## Troubleshooting
-
-### Common Issues:
-
-1. **CUDA Out of Memory**: Reduce `per_device_train_batch_size` or increase the quantization level
-2. **Modal Preemption**: The training will automatically resume from the last checkpoint
-3. **Missing Libraries**: Make sure all required packages are installed with the correct versions
-4. **Local GPU Not Detected**: Ensure CUDA is properly installed and PyTorch can access your GPU
+- Python 3.8+
+- CUDA-capable GPU with at least 16GB VRAM
+- Linux environment (for local training)
+- Required Python packages (see installation instructions above)
 
 
