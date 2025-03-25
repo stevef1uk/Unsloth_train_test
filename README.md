@@ -88,7 +88,7 @@ The test script supports the following parameters:
 ## Requirements
 
 - Python 3.8+
-- CUDA-capable GPU with at least 16GB VRAM
+- CUDA-capable GPU with at least 12GB VRAM
 - Linux environment (for local training)
 - Required Python packages (see installation instructions above)
 
